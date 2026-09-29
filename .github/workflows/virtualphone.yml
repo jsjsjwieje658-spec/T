@@ -106,7 +106,9 @@ jobs:
           ls -la "$ANDROID_AVD_HOME/"
           cat "$ANDROID_AVD_HOME/android-phone.ini" || { echo "::error::android-phone.ini missing!"; exit 1; }
 
-          # Write custom hardware config
+          # Write custom hardware config (preserve ABI from AVD creation)
+          ORIG_ABI=$(grep -E "^hw\.cpu\.arch=" "$ANDROID_AVD_HOME/android-phone.avd/config.ini" | head -1 || echo "hw.cpu.arch=x86_64")
+          ORIG_ABI_TAG=$(grep -E "^image\.sysdir\.arms|^tag\.id=" "$ANDROID_AVD_HOME/android-phone.avd/config.ini" | head -1 || true)
           printf '%s\n' \
             "hw.lcd.width=720" \
             "hw.lcd.height=1280" \
@@ -121,7 +123,9 @@ jobs:
             "hw.camera.back=none" \
             "hw.camera.front=none" \
             "disk.dataPartition.size=4G" \
+            "$ORIG_ABI" \
             > "$ANDROID_AVD_HOME/android-phone.avd/config.ini"
+          echo "Custom config.ini written (ABI: $ORIG_ABI)"
           echo "Custom config.ini written"
           cat "$ANDROID_AVD_HOME/android-phone.avd/config.ini"
 
