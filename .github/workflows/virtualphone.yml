@@ -10,7 +10,7 @@ on:
       api_level:
         description: 'Android API Level (30-34)'
         required: false
-        default: '33'
+        default: '30'
       session_minutes:
         description: 'Duration minutes (max 350)'
         required: false
@@ -33,8 +33,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libpulse0 libgl1 libnss3 libxcomposite1 libxcursor1 \
             libxdamage1 libxi6 libxtst6 libxrandr2 libasound2t64 \
-            xvfb x11vnc xdotool fluxbox novnc websockify net-tools libvulkan1 mesa-utils
-          echo "✓ System deps installed"
+            libvulkan1 mesa-utils \
+            xvfb x11vnc xdotool fluxbox novnc websockify net-tools
+          echo "System deps installed"
 
       - name: Install Emulator and System Image
         run: |
@@ -48,14 +49,14 @@ jobs:
             "platform-tools" \
             "system-images;android-${API};google_apis;x86_64"
           test -f "$SDK/emulator/emulator" || { echo "::error::Emulator not found!"; exit 1; }
-          echo "✓ Emulator installed"
+          echo "Emulator installed"
           echo "$SDK/emulator" >> $GITHUB_PATH
           echo "$SDK/platform-tools" >> $GITHUB_PATH
 
       - name: Fix KVM
         run: |
           sudo chmod 666 /dev/kvm
-          echo "✓ KVM ready"
+          echo "KVM ready"
 
       - name: Start Virtual Display
         run: |
@@ -66,44 +67,65 @@ jobs:
           DISPLAY=:99 fluxbox &
           sleep 2
           DISPLAY=:99 xdotool getdisplaygeometry
-          echo "✓ Xvfb on :99"
+          echo "Xvfb on :99"
 
       - name: Create AVD
         run: |
+          export ANDROID_AVD_HOME=$HOME/.android/avd
+          mkdir -p "$ANDROID_AVD_HOME"
           SDK=$ANDROID_SDK_ROOT
           AVDMANAGER=$SDK/cmdline-tools/latest/bin/avdmanager
           API="${{ github.event.inputs.api_level || '30' }}"
-          rm -rf ~/.android/avd/android-phone* 2>/dev/null || true
+          rm -rf "$ANDROID_AVD_HOME/android-phone"* 2>/dev/null || true
           echo "no" | $AVDMANAGER create avd \
             --name android-phone \
             --package "system-images;android-${API};google_apis;x86_64" \
+            --path "$ANDROID_AVD_HOME/android-phone.avd" \
             --force
-          $AVDMANAGER list avd | head -10
-          echo "✓ AVD created"
+          echo "--- AVD list ---"
+          $AVDMANAGER list avd
+          echo "--- Files ---"
+          ls -la "$ANDROID_AVD_HOME/"
+          ls -la "$ANDROID_AVD_HOME/android-phone.avd/" || true
+          if [ ! -f "$ANDROID_AVD_HOME/android-phone.ini" ]; then
+            echo "::warning::android-phone.ini not found, creating manually"
+            printf 'avd.ini.encoding=UTF-8\npath=%s/android-phone.avd\npath.rel=avd/android-phone.avd\ntarget=android-%s\n' "$ANDROID_AVD_HOME" "$API" > "$ANDROID_AVD_HOME/android-phone.ini"
+          fi
+          echo "--- android-phone.ini ---"
+          cat "$ANDROID_AVD_HOME/android-phone.ini"
+          echo "AVD created successfully"
 
       - name: Boot Android Emulator
         run: |
+          export ANDROID_AVD_HOME=$HOME/.android/avd
           SDK=$ANDROID_SDK_ROOT
           EMU=$SDK/emulator/emulator
           ADB=$SDK/platform-tools/adb
 
-          mkdir -p ~/.android/avd/android-phone.avd
-          cat > ~/.android/avd/android-phone.avd/config.ini << 'EOF'
-          hw.lcd.width=720
-          hw.lcd.height=1280
-          hw.lcd.density=320
-          hw.ramSize=1536
-          hw.cpu.ncore=1
-          hw.gpu.enabled=yes
-          hw.gpu.mode=swiftshader_indirect
-          hw.keyboard=yes
-          hw.audioInput=no
-          hw.audioOutput=no
-          hw.camera.back=none
-          hw.camera.front=none
-          disk.dataPartition.size=4G
-          EOF
+          echo "=== AVD Pre-flight Check ==="
+          ls -la "$ANDROID_AVD_HOME/"
+          cat "$ANDROID_AVD_HOME/android-phone.ini" || { echo "::error::android-phone.ini missing!"; exit 1; }
 
+          # Write custom hardware config
+          printf '%s\n' \
+            "hw.lcd.width=720" \
+            "hw.lcd.height=1280" \
+            "hw.lcd.density=320" \
+            "hw.ramSize=1536" \
+            "hw.cpu.ncore=1" \
+            "hw.gpu.enabled=yes" \
+            "hw.gpu.mode=swiftshader_indirect" \
+            "hw.keyboard=yes" \
+            "hw.audioInput=no" \
+            "hw.audioOutput=no" \
+            "hw.camera.back=none" \
+            "hw.camera.front=none" \
+            "disk.dataPartition.size=4G" \
+            > "$ANDROID_AVD_HOME/android-phone.avd/config.ini"
+          echo "Custom config.ini written"
+          cat "$ANDROID_AVD_HOME/android-phone.avd/config.ini"
+
+          # Check KVM
           ACCEL_FLAG=""
           if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
             echo "KVM available, using hardware acceleration"
@@ -138,6 +160,7 @@ jobs:
               -no-audio \
               -no-boot-anim \
               -no-accel \
+              -no-gpu \
               -no-snapshot \
               -no-metrics \
               &> /tmp/emulator.log &
@@ -158,7 +181,7 @@ jobs:
           for i in $(seq 1 180); do
             BOOT=$($ADB shell getprop sys.boot_completed 2>/dev/null | tr -d '\r\n ')
             if [ "$BOOT" = "1" ]; then
-              echo "✓ Android booted!"
+              echo "Android booted!"
               break
             fi
             if [ $((i % 12)) -eq 0 ]; then
@@ -176,7 +199,7 @@ jobs:
 
           $ADB devices
           $ADB shell getprop ro.build.version.release || true
-          echo "✓ Emulator running"
+          echo "Emulator running"
 
       - name: Start VNC Server
         run: |
@@ -192,7 +215,7 @@ jobs:
           x11vnc -display :99 -rfbport 5900 -rfbauth /tmp/vncpass \
             -forever -shared -noxdamage -repeat -bg -o /tmp/x11vnc.log
           sleep 2
-          netstat -tln | grep 5900 && echo "✓ VNC on :5900"
+          netstat -tln | grep 5900 && echo "VNC on :5900"
 
       - name: Start noVNC
         run: |
@@ -200,7 +223,7 @@ jobs:
           [ ! -d "$NOVNC_ROOT" ] && NOVNC_ROOT=/tmp/noVNC
           websockify --web $NOVNC_ROOT 6080 localhost:5900 &
           sleep 2
-          netstat -tln | grep 6080 && echo "✓ noVNC on :6080"
+          netstat -tln | grep 6080 && echo "noVNC on :6080"
 
       - name: Setup Tunnel
         run: |
@@ -213,12 +236,11 @@ jobs:
           if [ -n "$URL" ]; then
             echo "NOVNC_URL=$URL" >> $GITHUB_ENV
             echo ""
-            echo "╔═════════════════════════════════════════╗"
-            echo "║  📱 ANDROID PHONE ACTIVE                 ║"
-            echo "╠═════════════════════════════════════════╣"
-            echo "║  Browser:  $URL/vnc.html"
-            echo "║  Password: ${{ github.event.inputs.vnc_password || 'android123' }}"
-            echo "╚═════════════════════════════════════════╝"
+            echo "==========================================="
+            echo "  ANDROID PHONE ACTIVE"
+            echo "  Browser:  $URL/vnc.html"
+            echo "  Password: ${{ github.event.inputs.vnc_password || 'android123' }}"
+            echo "==========================================="
           else
             echo "::warning::Tunnel URL not found"
             cat /tmp/cf.log
@@ -244,7 +266,7 @@ jobs:
               /tmp/cloudflared tunnel --url http://localhost:6080 &> /tmp/cf_new.log &
               sleep 10
             fi
-            echo "[$(date)] ✓ ${UPTIME}min"
+            echo "[$(date)] Uptime: ${UPTIME}min"
           done
 
       - name: Cleanup
@@ -256,4 +278,4 @@ jobs:
           sudo pkill websockify 2>/dev/null || true
           sudo pkill cloudflared 2>/dev/null || true
           sudo pkill Xvfb 2>/dev/null || true
-          echo "✓ Cleanup done"
+          echo "Cleanup done"
