@@ -8,11 +8,11 @@ on:
         required: false
         default: 'android123'
       api_level:
-        description: 'Android API Level'
+        description: 'Android API Level (30-34)'
         required: false
         default: '33'
       session_minutes:
-        description: 'Session Duration (max 350 min)'
+        description: 'Duration minutes (max 350)'
         required: false
         default: '300'
 
@@ -28,45 +28,52 @@ jobs:
 
     steps:
       # ═══════════════════════════════════════════
-      # STEP 0: DEBUG — Check system capabilities
+      # STEP 1: Install emulator + system image
       # ═══════════════════════════════════════════
-      - name: System Check
+      - name: Install Emulator and System Image
         run: |
-          echo "=== CPU Info ==="
-          lscpu | grep -E "Model|CPU\(s\)|Virtualization"
-          echo ""
-          echo "=== KVM Check ==="
-          ls -la /dev/kvm 2>/dev/null || echo "❌ /dev/kvm NOT FOUND"
-          sudo ls -la /dev/kvm 2>/dev/null || echo "❌ /dev/kvm NOT FOUND even with sudo"
-          echo ""
-          echo "=== KVM Module ==="
-          lsmod | grep kvm || echo "kvm module not loaded"
-          sudo modprobe kvm 2>/dev/null || echo "modprobe kvm failed"
-          sudo modprobe kvm_intel 2>/dev/null || sudo modprobe kvm_amd 2>/dev/null || echo "no kvm vendor module"
-          lsmod | grep kvm
-          echo ""
-          echo "=== Memory ==="
-          free -h
-          echo ""
-          echo "=== Disk ==="
-          df -h /
-          echo ""
-          echo "=== SDK Tools ==="
-          ls $ANDROID_SDK_ROOT/
-          echo ""
-          echo "=== Emulator binary ==="
-          ls -la $ANDROID_SDK_ROOT/emulator/emulator 2>/dev/null || echo "emulator binary not found"
+          SDK=$ANDROID_SDK_ROOT
+          SDKMANAGER=$SDK/cmdline-tools/latest/bin/sdkmanager
           
-          # Fix KVM permissions
-          if [ -e /dev/kvm ]; then
-            sudo chmod 666 /dev/kvm
-            echo "✓ KVM permissions fixed (666)"
+          # Accept licenses first
+          yes | $SDKMANAGER --licenses > /dev/null 2>&1 || true
+          
+          API="${{ github.event.inputs.api_level || '33' }}"
+          
+          echo "Installing emulator, platform-tools, system image API $API..."
+          yes | $SDKMANAGER \
+            "emulator" \
+            "platform-tools" \
+            "system-images;android-${API};google_apis;x86_64" \
+            > /dev/null 2>&1
+          
+          # Verify emulator now exists
+          if [ -f "$SDK/emulator/emulator" ]; then
+            echo "✓ Emulator installed at $SDK/emulator/emulator"
+            $SDK/emulator/emulator --version
+          else
+            echo "::error::Emulator still not found!"
+            ls -la $SDK/emulator/ 2>/dev/null || echo "emulator dir missing"
+            exit 1
           fi
+          
+          # Add to PATH for subsequent steps
+          echo "$SDK/emulator" >> $GITHUB_PATH
+          echo "$SDK/platform-tools" >> $GITHUB_PATH
 
       # ═══════════════════════════════════════════
-      # STEP 1: Install dependencies (FIXED)
+      # STEP 2: Fix KVM permissions
       # ═══════════════════════════════════════════
-      - name: Install dependencies
+      - name: Fix KVM
+        run: |
+          sudo chmod 666 /dev/kvm
+          echo "✓ KVM ready"
+          ls -la /dev/kvm
+
+      # ═══════════════════════════════════════════
+      # STEP 3: Install VNC deps
+      # ═══════════════════════════════════════════
+      - name: Install VNC dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y \
@@ -76,124 +83,65 @@ jobs:
             fluxbox \
             novnc \
             websockify \
-            net-tools \
-            file \
-            wget
-          
-          # DO NOT install adb from apt — use SDK adb instead
-          # Remove apt adb if installed
-          sudo apt-get remove -y adb 2>/dev/null || true
-          
-          # Add SDK platform-tools to PATH
-          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
-          echo "$ANDROID_SDK_ROOT/emulator" >> $GITHUB_PATH
-          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          
-          echo "✓ Dependencies installed (SDK adb will be used)"
+            net-tools
+          echo "✓ VNC deps installed"
 
       # ═══════════════════════════════════════════
-      # STEP 2: Verify SDK + Install system image
-      # ═══════════════════════════════════════════
-      - name: Setup Android SDK
-        run: |
-          echo "=== Existing SDK components ==="
-          sdkmanager --list_installed 2>/dev/null || \
-            $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --list_installed 2>/dev/null || \
-            echo "sdkmanager not found directly, checking path..."
-          
-          # Accept licenses
-          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          
-          # Install system image + emulator + platform-tools
-          API="${{ github.event.inputs.api_level || '33' }}"
-          
-          echo "Installing system image: system-images;android-${API};google_apis;x86_64"
-          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager \
-            "system-images;android-${API};google_apis;x86_64" \
-            "emulator" \
-            "platform-tools" || {
-            echo "::error::Failed to install SDK components"
-            exit 1
-          }
-          
-          echo "✓ SDK components installed"
-          
-          # Verify
-          echo "=== Verify emulator ==="
-          $ANDROID_SDK_ROOT/emulator/emulator --version || echo "emulator check failed"
-          echo "=== Verify adb ==="
-          $ANDROID_SDK_ROOT/platform-tools/adb version || echo "adb check failed"
-          echo "=== List system images ==="
-          ls $ANDROID_SDK_ROOT/system-images/ 2>/dev/null
-          ls $ANDROID_SDK_ROOT/system-images/android-${API}/ 2>/dev/null
-
-      # ═══════════════════════════════════════════
-      # STEP 3: Start virtual display
+      # STEP 4: Start virtual display
       # ═══════════════════════════════════════════
       - name: Start Virtual Display
         run: |
-          # Kill any existing Xvfb
           sudo pkill Xvfb 2>/dev/null || true
           sleep 1
           
-          # Start Xvfb — 1080x1920 for emulator to fit inside
           Xvfb :99 -screen 0 1080x1920x24 -ac +extension GLX +render -noreset &
-          XVFB_PID=$!
           sleep 3
           
-          # Verify Xvfb running
-          if ! ps -p $XVFB_PID > /dev/null; then
-            echo "::error::Xvfb failed to start"
-            exit 1
-          fi
-          
-          # Start fluxbox window manager
           DISPLAY=:99 fluxbox &
           sleep 2
           
-          # Verify display works
-          DISPLAY=:99 xdotool getdisplaygeometry && echo "✓ Xvfb display :99 active"
-          
-          echo "DISPLAY=:99" >> $GITHUB_ENV
+          DISPLAY=:99 xdotool getdisplaygeometry
+          echo "✓ Xvfb on :99 (1080x1920)"
 
       # ═══════════════════════════════════════════
-      # STEP 4: Create AVD
+      # STEP 5: Create AVD
       # ═══════════════════════════════════════════
-      - name: Create Android Virtual Device
+      - name: Create AVD
         run: |
+          SDK=$ANDROID_SDK_ROOT
+          AVDMANAGER=$SDK/cmdline-tools/latest/bin/avdmanager
           API="${{ github.event.inputs.api_level || '33' }}"
           
-          # Delete existing AVD if any
-          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager delete avd -n android-phone 2>/dev/null || true
+          # Delete if exists
           rm -rf ~/.android/avd/android-phone* 2>/dev/null || true
           
-          # Create AVD
-          echo "no" | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager create avd \
+          echo "no" | $AVDMANAGER create avd \
             --name android-phone \
             --package "system-images;android-${API};google_apis;x86_64" \
             --device "pixel_4" \
             --force
           
-          # List AVDs
-          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager list avd
-          
+          # Verify AVD
+          $AVDMANAGER list avd | head -10
           echo "✓ AVD created"
 
       # ═══════════════════════════════════════════
-      # STEP 5: Start Android Emulator (FIXED)
+      # STEP 6: Boot Android Emulator
       # ═══════════════════════════════════════════
-      - name: Start Android Emulator
+      - name: Boot Android Emulator
         run: |
-          # Write emulator config
-          mkdir -p ~/.android/avd/android-phone.avd
+          SDK=$ANDROID_SDK_ROOT
+          EMU=$SDK/emulator/emulator
+          ADB=$SDK/platform-tools/adb
+          
+          # Write config for reasonable screen
+          mkdir -p ~/.android
           cat > ~/.android/avd/android-phone.avd/config.ini << EOF
-          avd.ini.encoding=UTF-8
           hw.lcd.width=720
           hw.lcd.height=1280
           hw.lcd.density=320
           hw.ramSize=2048
           hw.cpu.ncore=2
-          hw.cpu.arch=x86_64
           hw.gpu.enabled=yes
           hw.gpu.mode=swiftshader_indirect
           hw.keyboard=yes
@@ -202,345 +150,180 @@ jobs:
           hw.camera.back=none
           hw.camera.front=none
           disk.dataPartition.size=4G
-          image.sysdir.1=system-images/android-33/google_apis/x86_64/
-          tag.display=Google APIs
-          tag.id=google_apis
-          hw.device.name=pixel_4
-          hw.device.manufacturer=Google
           EOF
           
-          # Check KVM one more time
-          echo "=== Final KVM check before emulator start ==="
-          ls -la /dev/kvm || echo "WARNING: No KVM — emulator will be SLOW"
-          
-          # Start emulator with CORRECT flags
-          # Use DISPLAY env var, NOT -display flag
-          # Use -no-window is WRONG for VNC — we need it to render to X
-          # Use -no-snapshot for clean boot
-          
-          $ANDROID_SDK_ROOT/emulator/emulator \
+          echo "Starting emulator..."
+          $EMU \
             -avd android-phone \
             -no-audio \
             -no-boot-anim \
             -gpu swiftshader_indirect \
-            -memory 2048 \
             -no-snapshot \
             -no-metrics \
-            -logcat *:E \
             &> /tmp/emulator.log &
           
           EMU_PID=$!
           echo "Emulator PID: $EMU_PID"
-          echo "EMU_PID=$EMU_PID" >> $GITHUB_ENV
           
-          # Wait for emulator process
-          sleep 5
+          # Wait for process to stay alive
+          sleep 10
           if ! ps -p $EMU_PID > /dev/null; then
-            echo "::error::Emulator process died immediately!"
-            echo "=== Emulator Log ==="
+            echo "::error::Emulator died! Log:"
             cat /tmp/emulator.log
             exit 1
           fi
           
-          echo "Emulator process alive, waiting for ADB..."
-          
-          # Use SDK adb
-          ADB=$ANDROID_SDK_ROOT/platform-tools/adb
-          
-          # Wait for device to appear in adb
-          TIMEOUT=300
-          ELAPSED=0
-          while [ $ELAPSED -lt $TIMEOUT ]; do
-            if $ADB devices 2>/dev/null | grep -q "emulator-5554"; then
+          # Wait for ADB device
+          echo "Waiting for emulator in ADB (max 5 min)..."
+          for i in $(seq 1 60); do
+            if $ADB devices 2>/dev/null | grep -q "emulator-"; then
               echo "✓ Emulator detected in ADB!"
               break
             fi
             sleep 5
-            ELAPSED=$((ELAPSED + 5))
-            echo "  Waiting... ${ELAPSED}s / ${TIMEOUT}s"
           done
           
-          if ! $ADB devices 2>/dev/null | grep -q "emulator"; then
-            echo "::error::Emulator not detected after ${TIMEOUT}s"
-            echo "=== ADB devices ==="
+          if ! $ADB devices 2>/dev/null | grep -q "emulator-"; then
+            echo "::error::Emulator not detected in ADB after 5 minutes"
             $ADB devices
-            echo "=== Emulator Log (last 100 lines) ==="
             tail -100 /tmp/emulator.log
             exit 1
           fi
           
-          # Wait for boot completion
-          echo "Waiting for full Android boot..."
-          BOOT_TIMEOUT=300
-          BOOT_ELAPSED=0
-          while [ $BOOT_ELAPSED -lt $BOOT_TIMEOUT ]; do
-            BOOT=$(timeout 5 $ADB shell getprop sys.boot_completed 2>/dev/null | tr -d '\r\n')
+          # Wait for full boot
+          echo "Waiting for boot complete (max 5 min)..."
+          for i in $(seq 1 60); do
+            BOOT=$($ADB shell getprop sys.boot_completed 2>/dev/null | tr -d '\r\n ')
             if [ "$BOOT" = "1" ]; then
-              echo "✓ Android fully booted!"
+              echo "✓ Android booted!"
               break
             fi
-            sleep 10
-            BOOT_ELAPSED=$((BOOT_ELAPSED + 10))
-            echo "  Boot progress... ${BOOT_ELAPSED}s / ${BOOT_TIMEOUT}s (boot_completed=$BOOT)"
+            sleep 5
+            echo "  ...booting ($i)"
           done
           
-          # Verify boot
-          BOOT=$(timeout 5 $ADB shell getprop sys.boot_completed 2>/dev/null | tr -d '\r\n')
+          # Final check
+          BOOT=$($ADB shell getprop sys.boot_completed 2>/dev/null | tr -d '\r\n ')
           if [ "$BOOT" != "1" ]; then
-            echo "::warning::Boot may not be complete, but continuing..."
+            echo "::warning::Boot may not complete, continuing anyway..."
           fi
           
-          # Show device info
-          echo "=== Device Info ==="
-          $ADB shell getprop ro.build.version.release
-          $ADB shell getprop ro.product.model
-          $ADB shell getprop ro.build.display.id
-          
-          echo "✓ Android Emulator running"
+          $ADB devices
+          $ADB shell getprop ro.build.version.release || true
+          echo "✓ Emulator running"
 
       # ═══════════════════════════════════════════
-      # STEP 6: Configure Emulator Screen
-      # ═══════════════════════════════════════════
-      - name: Configure Emulator Display
-        run: |
-          ADB=$ANDROID_SDK_ROOT/platform-tools/adb
-          
-          # Find emulator window in Xvfb
-          sleep 3
-          EMU_WIN=$(DISPLAY=:99 xdotool search --name "Android Emulator" 2>/dev/null | head -1 || true)
-          
-          if [ -z "$EMU_WIN" ]; then
-            # Try other window names
-            EMU_WIN=$(DISPLAY=:99 xdotool search --name "emulator" 2>/dev/null | head -1 || true)
-          fi
-          
-          if [ -n "$EMU_WIN" ]; then
-            echo "Found emulator window: $EMU_WIN"
-            # Move to top-left corner
-            DISPLAY=:99 xdotool windowmove $EMU_WIN 0 0
-            # Resize to match screen
-            DISPLAY=:99 xdotool windowsize $EMU_WIN 720 1280
-            sleep 1
-            # Activate
-            DISPLAY=:99 xdotool windowactivate $EMU_WIN
-            echo "✓ Emulator window positioned"
-          else
-            echo "Emulator window not found via xdotool — listing all windows:"
-            DISPLAY=:99 xdotool search --name "" getwindowname %@ 2>/dev/null || true
-            # This is OK — x11vnc will share whole screen anyway
-          fi
-          
-          echo "✓ Display configured"
-
-      # ═══════════════════════════════════════════
-      # STEP 7: Start VNC Server
+      # STEP 7: Start VNC + noVNC
       # ═══════════════════════════════════════════
       - name: Start VNC Server
         run: |
           PASSWD="${{ github.event.inputs.vnc_password || 'android123' }}"
           
-          # Kill existing VNC
-          sudo pkill x11vnc 2>/dev/null || true
-          sleep 1
-          
-          # Create password file
-          x11vnc -storepasswd "$PASSWD" /tmp/vncpass
+          # Position emulator window
+          sleep 3
+          WIN=$(DISPLAY=:99 xdotool search --name "Android" 2>/dev/null | head -1)
+          if [ -n "$WIN" ]; then
+            DISPLAY=:99 xdotool windowmove $WIN 0 0
+            DISPLAY=:99 xdotool windowsize $WIN 720 1280
+            DISPLAY=:99 xdotool windowactivate $WIN
+          fi
           
           # Start x11vnc
-          x11vnc \
-            -display :99 \
-            -rfbport 5900 \
-            -rfbauth /tmp/vncpass \
-            -forever \
-            -shared \
-            -noxdamage \
-            -repeat \
-            -cursor arrow \
-            -noxrecord \
-            -bg \
-            -o /tmp/x11vnc.log
+          x11vnc -storepasswd "$PASSWD" /tmp/vncpass
+          x11vnc -display :99 -rfbport 5900 -rfbauth /tmp/vncpass \
+            -forever -shared -noxdamage -repeat -bg -o /tmp/x11vnc.log
           
           sleep 2
-          
-          # Verify
-          if netstat -tln | grep -q 5900; then
-            echo "✓ VNC server listening on port 5900"
-          else
-            echo "::error::VNC not listening!"
-            cat /tmp/x11vnc.log
-            exit 1
-          fi
+          netstat -tln | grep 5900 && echo "✓ VNC on :5900"
 
-      # ═══════════════════════════════════════════
-      # STEP 8: Start noVNC Web Client
-      # ═══════════════════════════════════════════
       - name: Start noVNC
         run: |
-          # Kill existing
-          sudo pkill websockify 2>/dev/null || true
-          sudo pkill -f novnc 2>/dev/null || true
-          sleep 1
+          NOVNC_ROOT=/usr/share/novnc
+          [ ! -d "$NOVNC_ROOT" ] && NOVNC_ROOT=/tmp/noVNC
           
-          # Find noVNC web root
-          if [ -d /usr/share/novnc ]; then
-            NOVNC_ROOT=/usr/share/novnc
-          elif [ -f /usr/share/novnc/vnc.html ]; then
-            NOVNC_ROOT=/usr/share/novnc
-          else
-            # Download noVNC
-            git clone --depth 1 https://github.com/novnc/noVNC.git /tmp/noVNC
-            NOVNC_ROOT=/tmp/noVNC
-          fi
-          
-          echo "noVNC root: $NOVNC_ROOT"
-          ls $NOVNC_ROOT/vnc.html && echo "vnc.html found"
-          
-          # Start websockify
           websockify --web $NOVNC_ROOT 6080 localhost:5900 &
-          WS_PID=$!
           sleep 2
-          
-          if ! ps -p $WS_PID > /dev/null; then
-            echo "::error::websockify failed"
-            exit 1
-          fi
-          
-          if netstat -tln | grep -q 6080; then
-            echo "✓ noVNC web client on port 6080"
-          else
-            echo "::error::noVNC not listening!"
-            exit 1
-          fi
+          netstat -tln | grep 6080 && echo "✓ noVNC on :6080"
 
       # ═══════════════════════════════════════════
-      # STEP 9: Setup Cloudflare Tunnel
+      # STEP 8: Public tunnel
       # ═══════════════════════════════════════════
-      - name: Setup Public Tunnel
+      - name: Setup Tunnel
         run: |
-          # Download cloudflared
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
             -O /tmp/cloudflared
           chmod +x /tmp/cloudflared
           
-          # Kill existing
-          sudo pkill cloudflared 2>/dev/null || true
-          sleep 1
-          
-          # Start tunnel — noVNC only (most useful)
-          /tmp/cloudflared tunnel --url http://localhost:6080 &> /tmp/cf_tunnel.log &
-          
-          # Wait for URL
+          /tmp/cloudflared tunnel --url http://localhost:6080 &> /tmp/cf.log &
           sleep 15
           
-          # Extract URL
-          NOVNC_URL=""
-          for i in 1 2 3 4 5; do
-            NOVNC_URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' /tmp/cf_tunnel.log | head -1)
-            if [ -n "$NOVNC_URL" ]; then
-              break
-            fi
-            echo "Waiting for tunnel URL... attempt $i"
-            sleep 5
-          done
+          URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' /tmp/cf.log | head -1)
           
-          if [ -z "$NOVNC_URL" ]; then
-            echo "::warning::Could not get tunnel URL"
-            cat /tmp/cf_tunnel.log
-            NOVNC_URL="TUNNEL_FAILED"
+          if [ -n "$URL" ]; then
+            echo "NOVNC_URL=$URL" >> $GITHUB_ENV
+            echo ""
+            echo "╔═════════════════════════════════════════╗"
+            echo "║  📱 ANDROID PHONE ACTIVE                 ║"
+            echo "╠═════════════════════════════════════════╣"
+            echo "║  Browser:  $URL/vnc.html"
+            echo "║  Password: ${{ github.event.inputs.vnc_password || 'android123' }}"
+            echo "╚═════════════════════════════════════════╝"
+          else
+            echo "::warning::Tunnel URL not found"
+            cat /tmp/cf.log
           fi
-          
-          echo "NOVNC_URL=${NOVNC_URL}" >> $GITHUB_ENV
-          
-          echo ""
-          echo "═══════════════════════════════════════════"
-          echo "  📱 ANDROID VIRTUAL PHONE - ACTIVE"
-          echo "═══════════════════════════════════════════"
-          echo "  noVNC Browser: ${NOVNC_URL}/vnc.html"
-          echo "  VNC Password:  ${{ github.event.inputs.vnc_password || 'android123' }}"
-          echo "═══════════════════════════════════════════"
-          echo ""
 
       # ═══════════════════════════════════════════
-      # STEP 10: Display Connection Info
-      # ═══════════════════════════════════════════
-      - name: Connection Info
-        run: |
-          ADB=$ANDROID_SDK_ROOT/platform-tools/adb
-          
-          echo ""
-          echo "╔══════════════════════════════════════════════════════════╗"
-          echo "║      📱 ANDROID VIRTUAL PHONE - VNC SERVER ACTIVE 📱      ║"
-          echo "╠══════════════════════════════════════════════════════════╣"
-          echo "║                                                          ║"
-          echo "║  METHOD 1: Browser (noVNC) — RECOMMENDED                ║"
-          echo "║  ──────────────────────────────────────────              ║"
-          echo "║  URL: ${NOVNC_URL}/vnc.html"
-          echo "║  Password: ${{ github.event.inputs.vnc_password || 'android123' }}"
-          echo "║                                                          ║"
-          echo "║  METHOD 2: ADB (for scrcpy, debugging)                   ║"
-          echo "║  ─────────────────────────────────────                    ║"
-          echo "║  Emulator is running on emulator-5554                    ║"
-          echo "║                                                          ║"
-          echo "║  Device Status:                                          ║"
-          $ADB devices
-          echo "║  Android Version: $($ADB shell getprop ro.build.version.release 2>/dev/null || echo 'unknown')"
-          echo "║                                                          ║"
-          echo "╚══════════════════════════════════════════════════════════╝"
-          echo ""
-
-      # ═══════════════════════════════════════════
-      # STEP 11: Keep Alive Monitor
+      # STEP 9: Keep alive
       # ═══════════════════════════════════════════
       - name: Keep Alive
         timeout-minutes: 360
         run: |
           ADB=$ANDROID_SDK_ROOT/platform-tools/adb
-          SESSION_MIN="${{ github.event.inputs.session_minutes || '300' }}"
+          MIN="${{ github.event.inputs.session_minutes || '300' }}"
           START=$(date +%s)
-          END=$((START + SESSION_MIN * 60))
-          
-          echo "Session will run for ${SESSION_MIN} minutes"
-          echo "Monitor loop started..."
-          
-          CHECK_COUNT=0
+          END=$((START + MIN * 60))
           
           while [ $(date +%s) -lt $END ]; do
             sleep 60
-            CHECK_COUNT=$((CHECK_COUNT + 1))
             UPTIME=$(( ($(date +%s) - START) / 60 ))
             
-            # Health check
-            ALL_OK=true
-            
-            # Check emulator alive
-            if ! pgrep -f "emulator.*android-phone" > /dev/null; then
-              echo "[$(date)] ⚠️ Emulator process not found!"
-              ALL_OK=false
-            fi
-            
-            # Check ADB responsive
-            if ! timeout 5 $ADB shell echo "ping" &>/dev/null; then
-              echo "[$(date)] ⚠️ ADB not responding!"
-              ALL_OK=false
-            fi
-            
-            # Check VNC alive
+            # Health: VNC
             if ! netstat -tln | grep -q 5900; then
-              echo "[$(date)] ⚠️ VNC dead, restarting..."
               x11vnc -display :99 -rfbport 5900 -rfbauth /tmp/vncpass \
-                -forever -shared -noxdamage -bg -o /tmp/x11vnc.log
-              ALL_OK=false
+                -forever -shared -bg
+              echo "[$(date)] VNC restarted"
             fi
             
-            # Check noVNC alive
+            # Health: noVNC
             if ! netstat -tln | grep -q 6080; then
-              echo "[$(date)] ⚠️ noVNC dead, restarting..."
-              NOVNC_ROOT=/usr/share/novnc
-              [ ! -d "$NOVNC_ROOT" ] && NOVNC_ROOT=/tmp/noVNC
-              websockify --web $NOVNC_ROOT 6080 localhost:5900 &
+              websockify --web /usr/share/novnc 6080 localhost:5900 &
+              echo "[$(date)] noVNC restarted"
             fi
             
-            # Check tunnel alive
+            # Health: tunnel
             if ! pgrep cloudflared > /dev/null; then
-              echo "[$(date)] ⚠️ Tunnel dead, restarting..."
-              /tmp/cloudflared tunnel --url http://localhost:6080 &> /tmp/cf_tunn
+              /tmp/cloudflared tunnel --url http://localhost:6080 &> /tmp/cf_new.log &
+              sleep 10
+              NEW=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' /tmp/cf_new.log | head -1)
+              if [ -n "$NEW" ]; then
+                echo "[$(date)] NEW URL: $NEW/vnc.html"
+              fi
+            fi
+            
+            echo "[$(date)] ✓ Uptime: ${UPTIME}min"
+          done
+
+      # ═══════════════════════════════════════════
+      # STEP 10: Cleanup
+      # ═══════════════════════════════════════════
+      - name: Cleanup
+        if: always()
+        run: |
+          $ANDROID_SDK_ROOT/platform-tools/adb emu kill 2>/dev/null || true
+          sudo pkill -f emulator 2>/dev/null || true
+          sudo pkill x11vnc 2>/dev/null || true
+          sudo pkill websockify 2>/dev/null || true
+          sudo pkill cloudflared 2>/dev/null || true
+          sudo pkill Xvfb 2>/dev/null || true
+          echo "✓ Cleanup done"
