@@ -33,7 +33,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libpulse0 libgl1 libnss3 libxcomposite1 libxcursor1 \
             libxdamage1 libxi6 libxtst6 libxrandr2 libasound2t64 \
-            xvfb x11vnc xdotool fluxbox novnc websockify net-tools
+            xvfb x11vnc xdotool fluxbox novnc websockify net-tools libvulkan1 mesa-utils
           echo "✓ System deps installed"
 
       - name: Install Emulator and System Image
@@ -41,7 +41,7 @@ jobs:
           SDK=$ANDROID_SDK_ROOT
           SDKMANAGER=$SDK/cmdline-tools/latest/bin/sdkmanager
           yes | $SDKMANAGER --licenses > /dev/null 2>&1 || true
-          API="${{ github.event.inputs.api_level || '33' }}"
+          API="${{ github.event.inputs.api_level || '30' }}"
           echo "Installing emulator, platform-tools, system image API $API..."
           yes | $SDKMANAGER \
             "emulator" \
@@ -72,7 +72,7 @@ jobs:
         run: |
           SDK=$ANDROID_SDK_ROOT
           AVDMANAGER=$SDK/cmdline-tools/latest/bin/avdmanager
-          API="${{ github.event.inputs.api_level || '33' }}"
+          API="${{ github.event.inputs.api_level || '30' }}"
           rm -rf ~/.android/avd/android-phone* 2>/dev/null || true
           echo "no" | $AVDMANAGER create avd \
             --name android-phone \
@@ -92,8 +92,8 @@ jobs:
           hw.lcd.width=720
           hw.lcd.height=1280
           hw.lcd.density=320
-          hw.ramSize=2048
-          hw.cpu.ncore=2
+          hw.ramSize=1536
+          hw.cpu.ncore=1
           hw.gpu.enabled=yes
           hw.gpu.mode=swiftshader_indirect
           hw.keyboard=yes
@@ -104,6 +104,15 @@ jobs:
           disk.dataPartition.size=4G
           EOF
 
+          ACCEL_FLAG=""
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            echo "KVM available, using hardware acceleration"
+            ACCEL_FLAG="-accel kvm"
+          else
+            echo "KVM not available, using software acceleration"
+            ACCEL_FLAG="-no-accel"
+          fi
+
           echo "Starting emulator..."
           $EMU \
             -avd android-phone \
@@ -113,23 +122,40 @@ jobs:
             -gpu swiftshader_indirect \
             -no-snapshot \
             -no-metrics \
+            $ACCEL_FLAG \
             &> /tmp/emulator.log &
 
           EMU_PID=$!
           echo "Emulator PID: $EMU_PID"
-          sleep 10
+          sleep 15
 
           if ! ps -p $EMU_PID > /dev/null; then
-            echo "::error::Emulator died!"
-            cat /tmp/emulator.log
-            exit 1
+            echo "::warning::Emulator died on first attempt, retrying without GPU..."
+            tail -20 /tmp/emulator.log
+            $EMU \
+              -avd android-phone \
+              -no-window \
+              -no-audio \
+              -no-boot-anim \
+              -no-accel \
+              -no-snapshot \
+              -no-metrics \
+              &> /tmp/emulator.log &
+            EMU_PID=$!
+            echo "Retry Emulator PID: $EMU_PID"
+            sleep 15
+            if ! ps -p $EMU_PID > /dev/null; then
+              echo "::error::Emulator died on retry!"
+              cat /tmp/emulator.log
+              exit 1
+            fi
           fi
 
           echo "Waiting for ADB device..."
           $ADB wait-for-device
 
-          echo "Waiting for boot (max 10 min)..."
-          for i in $(seq 1 120); do
+          echo "Waiting for boot (max 15 min)..."
+          for i in $(seq 1 180); do
             BOOT=$($ADB shell getprop sys.boot_completed 2>/dev/null | tr -d '\r\n ')
             if [ "$BOOT" = "1" ]; then
               echo "✓ Android booted!"
