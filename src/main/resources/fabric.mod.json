@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "mobesp",
+  "version": "${version}",
+  "name": "Mob & Entity ESP 1.21",
+  "description": "Mod Fabric 1.21 hỗ trợ hiển thị khung hộp 3D (Bounding Box), đường dẫn (Tracer) và viền phát sáng xuyên tường (Shader Outline) cho sinh vật theo phân loại màu sắc.",
+  "authors": [
+    "jsjsjwieje658-spec"
+  ],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.example.mobesp.MobEspClientMod"
+    ]
+  },
+  "mixins": [
+    "mobesp.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

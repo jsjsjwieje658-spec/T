@@ -1,0 +1,22 @@
+{
+  "name": "minecraft-fabric-1.21-remote-agent",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/sshd:1": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/java:1": {
+      "version": "21",
+      "jdkDistro": "tem",
+      "installGradle": "true"
+    }
+  },
+  "remoteUser": "vscode",
+  "init": true,
+  "postCreateCommand": "bash .devcontainer/setup-agent.sh",
+  "waitFor": "postCreateCommand",
+  "otherPortsAttributes": {
+    "onAutoForward": "silent"
+  }
+}

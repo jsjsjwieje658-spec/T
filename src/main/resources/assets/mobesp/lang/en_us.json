@@ -1,0 +1,7 @@
+{
+  "category.mobesp.general": "Mob & Entity ESP (1.21)",
+  "key.mobesp.toggle_esp": "Toggle Entity ESP",
+  "key.mobesp.cycle_filter": "Cycle Entity Filter (All / Hostile / Passive / Players)",
+  "key.mobesp.toggle_outline": "Toggle Through-Wall Glowing Outline",
+  "key.mobesp.toggle_tracers": "Toggle Entity Tracers"
+}

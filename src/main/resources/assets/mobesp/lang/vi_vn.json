@@ -1,0 +1,7 @@
+{
+  "category.mobesp.general": "Mob & Entity ESP (1.21)",
+  "key.mobesp.toggle_esp": "Bật / Tắt ESP Sinh Vật",
+  "key.mobesp.cycle_filter": "Chuyển bộ lọc Sinh Vật (Tất cả / Quái / Thú / Người chơi)",
+  "key.mobesp.toggle_outline": "Bật / Tắt Viền Phát Sáng Xuyên Tường (Outline)",
+  "key.mobesp.toggle_tracers": "Bật / Tắt Đường Chỉ Hướng (Tracer)"
+}
